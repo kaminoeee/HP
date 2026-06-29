@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>完全自動同期 P2Pシアター</title>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        body {
+            margin: 0; padding: 0;
+            background-color: #000000; color: white;
+            font-family: Arial, sans-serif; overflow: hidden; height: 100vh;
+        }
+        #video-bg {
+            position: absolute; top: 0; left: 0; width: 100%; height: 80vh;
+            object-fit: contain; background-color: #000; z-index: 0;
+        }
+        #comment-stage {
+            position: absolute; top: 0; left: 0; width: 100%; height: 80vh;
+            pointer-events: none; z-index: 2;
+        }
+        .comment {
+            position: absolute; white-space: nowrap; font-size: 32px; font-weight: bold;
+            color: #ffffff; text-shadow: 2px 2px 2px #000, -2px -2px 2px #000, 2px -2px 2px #000, -2px 2px 2px #000;
+            will-change: transform; animation: textScroll 5s linear forwards;
+        }
+        @keyframes textScroll {
+            0% { transform: translateX(100vw); }
+            100% { transform: translateX(-100%); }
+        }
+        #announcement-bar {
+            position: absolute; top: 0; left: 0; width: 100%;
+            background: rgba(204, 0, 0, 0.85); color: #fff;
+            text-align: center; padding: 8px 0; font-weight: bold; font-size: 16px;
+            z-index: 3; display: none;
+        }
+        #ui-panel {
+            position: absolute; bottom: 0; left: 0; width: 100%; height: 20vh;
+            background: rgba(15, 15, 15, 0.95); box-sizing: border-box; padding: 15px;
+            z-index: 10; display: flex; flex-direction: column; gap: 10px; border-top: 2px solid #333;
+        }
+        .row { display: flex; gap: 10px; align-items: center; }
+        .admin-only { display: none; background: #2a1a00; border: 1px solid #ff9900; padding: 5px; border-radius: 4px; }
+        input, button { padding: 8px 12px; font-size: 14px; border-radius: 4px; border: none; }
+        input[type="text"] { background: #222; color: white; border: 1px solid #444; }
+        #comment-input { flex: 1; }
+        #announcement-input { width: 250px; }
+        button { background: #007bff; color: white; cursor: pointer; font-weight: bold; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #444; cursor: not-allowed; }
+        #screen-btn { background: #28a745; }
+        #announce-btn { background: #dc3545; }
+        #status-msg { font-size: 12px; color: #ff9900; font-weight: bold; }
+        #peer-count { color: #00ffcc; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div id="announcement-bar"></div>
+    <video id="video-bg" autoplay playsinline muted></video>
+    <div id="comment-stage"></div>
+
+    <div id="ui-panel">
+        <div class="row">
+            <span id="status-msg">接続を初期化中...</span>
+            <span>接続数: <span id="peer-count">0</span>人</span>
+
+            <div id="admin-controls" class="admin-only" style="gap: 10px; align-items: center;">
+                <button id="screen-btn">画面共有を開始</button>
+                <input type="text" id="announcement-input" placeholder="流すお知らせを入力">
+                <button id="announce-btn">送信</button>
+            </div>
+        </div>
+
+        <div class="row">
+            <input type="text" id="comment-input" placeholder="ここに入力してEnterでコメントが流れます" disabled>
+            <button id="send-btn" disabled>送信</button>
+        </div>
+    </div>
+
+    <script>
+        const commentStage = document.getElementById('comment-stage');
+        const videoBg = document.getElementById('video-bg');
+        const announcementBar = document.getElementById('announcement-bar');
+        const statusMsg = document.getElementById('status-msg');
+        const peerCountDisplay = document.getElementById('peer-count');
+        const commentInput = document.getElementById('comment-input');
+        const sendBtn = document.getElementById('send-btn');
+        
+        const adminControls = document.getElementById('admin-controls');
+        const screenBtn = document.getElementById('screen-btn');
+        const announcementInput = document.getElementById('announcement-input');
+        const announceBtn = document.getElementById('announce-btn');
+
+        let peer = null;
+        let connections = {}; 
+        let localStream = null;
+        let mqttClient = null;
+
+        // 部屋番号は「1」で固定
+        const ROOM_ID = "1";
+        const MQTT_TOPIC = `nico-p2p-live-room-${ROOM_ID}`;
+
+        const isAdmin = window.location.search.includes('_admin');
+        if (isAdmin) adminControls.style.display = 'flex';
+
+        // ページ読み込み時に【完全自動】で起動
+        window.addEventListener('DOMContentLoaded', () => {
+            initP2P();
+        });
+
+        function initP2P() {
+            // 1. PeerJSを起動
+            peer = new Peer();
+
+            peer.on('open', (myId) => {
+                statusMsg.textContent = "同期システムに接続中...";
+                commentInput.disabled = false;
+                sendBtn.disabled = false;
+
+                // 2. 最も安定しているパブリックMQTTブローカー（ブラウザ通信用）に接続
+                // GitHub Pagesのhttps制限を100%回避できる暗号化プロトコルを使用
+                mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
+
+                mqttClient.on('connect', () => {
+                    // 部屋のトピックを購読（同じ部屋の人たちの声を聞く）
+                    mqttClient.subscribe(MQTT_TOPIC);
+                    statusMsg.textContent = `部屋 ${ROOM_ID} に自動入室しました。`;
+
+                    // 自分の存在（PeerID）を同じ部屋の全員に一斉通知
+                    mqttClient.publish(MQTT_TOPIC, JSON.stringify({ type: 'join', id: myId }));
+                });
+
+                mqttClient.on('message', (topic, message) => {
+                    const data = JSON.parse(message.toString());
+                    
+                    if (data.id && data.id !== myId) {
+                        if (data.type === 'join') {
+                            // 後から入ってきた人に「自分もいるよ」と教えてあげる
+                            mqttClient.publish(MQTT_TOPIC, JSON.stringify({ type: 'here', id: myId }));
+                            connectToPeer(data.id);
+                        } else if (data.type === 'here') {
+                            // 先にいた人を発見したのでP2P接続を仕掛ける
+                            connectToPeer(data.id);
+                        }
+                    }
+                });
+            });
+
+            // 他人からのデータ接続要求を受け付ける
+            peer.on('connection', (conn) => {
+                setupDataConnection(conn);
+            });
+
+            // 管理者からの映像通話を受け付ける
+            peer.on('call', (call) => {
+                call.answer();
+                call.on('stream', (remoteStream) => {
+                    videoBg.srcObject = remoteStream; // 背景に投影
+                });
+            });
+        }
+
+        function connectToPeer(peerId) {
+            if (connections[peerId]) return;
+
+            const conn = peer.connect(peerId);
+            setupDataConnection(conn);
+
+            // 自分が管理者かつ、すでに配信中の場合は、見つかった相手に即映像を送る
+            if (isAdmin && localStream) {
+                setTimeout(() => { peer.call(peerId, localStream); }, 1000);
+            }
+        }
+
+        function setupDataConnection(conn) {
+            if (connections[conn.peer]) return;
+            
+            conn.on('open', () => {
+                connections[conn.peer] = conn;
+                updatePeerCount();
+
+                if (isAdmin && localStream) {
+                    peer.call(conn.peer, localStream);
+                }
+            });
+
+            conn.on('data', (data) => {
+                if (data.type === 'comment') createComment(data.text);
+                if (data.type === 'announce') showAnnouncement(data.text);
+            });
+
+            conn.on('close', () => { delete connections[conn.peer]; updatePeerCount(); });
+            conn.on('error', () => { delete connections[conn.peer]; updatePeerCount(); });
+        }
+
+        function updatePeerCount() {
+            peerCountDisplay.textContent = Object.keys(connections).length;
+        }
+
+        function createComment(text) {
+            const commentElem = document.createElement('div');
+            commentElem.classList.add('comment');
+            commentElem.textContent = text;
+            const randomTop = Math.floor(Math.random() * 65) + 10;
+            commentElem.style.top = `${randomTop}%`;
+            commentStage.appendChild(commentElem);
+            commentElem.addEventListener('animationend', () => commentElem.remove());
+        }
+
+        function showAnnouncement(text) {
+            if (!text) {
+                announcementBar.style.display = 'none';
+            } else {
+                announcementBar.textContent = text;
+                announcementBar.style.display = 'block';
+            }
+        }
+
+        function broadcastData(data) {
+            Object.values(connections).forEach(conn => {
+                if (conn.open) conn.send(data);
+            });
+        }
+
+        function sendComment() {
+            const text = commentInput.value.trim();
+            if (!text) return;
+            createComment(text);
+            broadcastData({ type: 'comment', text: text });
+            commentInput.value = '';
+        }
+
+        // 管理者：画面共有
+        screenBtn.addEventListener('click', async () => {
+            try {
+                localStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: { cursor: "always" }, audio: false
+                });
+                videoBg.srcObject = localStream;
+                screenBtn.disabled = true;
+                screenBtn.textContent = "配信中";
+
+                Object.keys(connections).forEach(peerId => {
+                    peer.call(peerId, localStream);
+                });
+
+                localStream.getVideoTracks()[0].addEventListener('ended', () => {
+                    screenBtn.disabled = false;
+                    screenBtn.textContent = "画面共有を開始";
+                    localStream = null;
+                });
+            } catch (err) {
+                console.error("画面共有エラー:", err);
+            }
+        });
+
+        // 管理者：お知らせ
+        announceBtn.addEventListener('click', () => {
+            const text = announcementInput.value.trim();
+            showAnnouncement(text);
+            broadcastData({ type: 'announce', text: text });
+        });
+
+        sendBtn.addEventListener('click', sendComment);
+        commentInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.isComposing) sendComment();
+        });
+    </script>
+</body>
+</html>
