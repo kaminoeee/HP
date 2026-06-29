@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>試験的P2P表示画面</title>
+    <title>高機能試験的p2p表示画面</title>
     <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
@@ -14,46 +14,75 @@
         }
         #video-bg {
             position: absolute; top: 0; left: 0; width: 100%; height: 80vh;
-            object-fit: contain; background-color: #000; z-index: 0;
-            display: none; /* 初期状態は非表示（真っ黒な背景） */
+            object-fit: contain; background-color: #000000; z-index: 0;
+            display: none;
         }
         #comment-stage {
             position: absolute; top: 0; left: 0; width: 100%; height: 80vh;
             pointer-events: none; z-index: 2;
         }
+        
+        /* --- コメント各種スタイル --- */
         .comment {
-            position: absolute; white-space: nowrap; font-size: 32px; font-weight: bold;
-            color: #ffffff; text-shadow: 2px 2px 2px #000, -2px -2px 2px #000, 2px -2px 2px #000, -2px 2px 2px #000;
-            will-change: transform; animation: textScroll 5s linear forwards;
+            position: absolute;
+            white-space: nowrap;
+            font-weight: bold;
+            text-shadow: 2px 2px 2px #000, -2px -2px 2px #000, 2px -2px 2px #000, -2px 2px 2px #000;
+            will-change: transform;
         }
+        /* 流れるコメント */
+        .comment.naka {
+            animation: textScroll 5s linear forwards;
+        }
+        /* 固定コメント（上下共通） */
+        .comment.ue, .comment.shita {
+            left: 50%;
+            transform: translateX(-50%);
+            animation: textFixed 3s linear forwards; /* 3秒間表示 */
+        }
+
         @keyframes textScroll {
             0% { transform: translateX(100vw); }
             100% { transform: translateX(-100%); }
         }
+        @keyframes textFixed {
+            0%, 100% { opacity: 1; }
+        }
+
+        /* --- お知らせバー --- */
         #announcement-bar {
             position: absolute; top: 0; left: 0; width: 100%;
-            background: rgba(204, 0, 0, 0.85); color: #fff;
-            text-align: center; padding: 8px 0; font-weight: bold; font-size: 16px;
+            background: rgba(204, 0, 0, 0.9); color: #fff;
+            text-align: center; padding: 10px 0; font-weight: bold; font-size: 18px;
             z-index: 3; display: none;
         }
+
+        /* --- UIコントロールパネル --- */
         #ui-panel {
-            position: absolute; bottom: 0; left: 0; width: 100%; height: 20vh;
-            background: rgba(15, 15, 15, 0.95); box-sizing: border-box; padding: 15px;
-            z-index: 10; display: flex; flex-direction: column; gap: 10px; border-top: 2px solid #333;
+            position: absolute; bottom: 0; left: 0; width: 100%; height: 25vh; /* メニュー増量のため少し広げました */
+            background: rgba(15, 15, 15, 0.95); box-sizing: border-box; padding: 12px;
+            z-index: 10; display: flex; flex-direction: column; gap: 8px; border-top: 2px solid #333;
         }
-        .row { display: flex; gap: 10px; align-items: center; }
-        .admin-only { display: none; background: #2a1a00; border: 1px solid #ff9900; padding: 5px; border-radius: 4px; }
-        input, button { padding: 8px 12px; font-size: 14px; border-radius: 4px; border: none; }
-        input[type="text"] { background: #222; color: white; border: 1px solid #444; }
-        #comment-input { flex: 1; }
-        #announcement-input { width: 250px; }
+        .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .admin-only { display: none; background: #2a1a00; border: 1px solid #ff9900; padding: 5px; border-radius: 4px; gap: 8px; align-items: center; }
+        
+        input, button, select { padding: 6px 10px; font-size: 13px; border-radius: 4px; border: none; }
+        input[type="text"], input[type="number"] { background: #222; color: white; border: 1px solid #444; }
+        select { background: #333; color: white; border: 1px solid #555; }
+        
+        #comment-input { flex: 1; min-width: 200px; }
+        #announcement-input { width: 180px; }
+        #com-size { width: 50px; text-align: center; }
+        
         button { background: #007bff; color: white; cursor: pointer; font-weight: bold; }
         button:hover { background: #0056b3; }
         button:disabled { background: #444; cursor: not-allowed; }
         #screen-btn { background: #28a745; }
         #announce-btn { background: #dc3545; }
+        #announce-stop-btn { background: #6c757d; }
+        
         #status-msg { font-size: 12px; color: #ff9900; font-weight: bold; }
-        #peer-count { color: #00ffcc; font-weight: bold; }
+        label { font-size: 12px; color: #ccc; }
     </style>
 </head>
 <body>
@@ -65,17 +94,42 @@
     <div id="ui-panel">
         <div class="row">
             <span id="status-msg">接続を初期化中...</span>
-            <span>接続数: <span id="peer-count">0</span>人</span>
+            <span style="font-size:12px;">接続数: <span id="peer-count" style="color:#00ffcc; font-weight:bold;">0</span>人</span>
 
-            <div id="admin-controls" class="admin-only" style="gap: 10px; align-items: center;">
+            <div id="admin-controls" class="admin-only">
+                <span style="color: #ff9900; font-weight: bold; font-size:12px;">【管理】</span>
                 <button id="screen-btn">画面共有を開始</button>
-                <input type="text" id="announcement-input" placeholder="流すお知らせを入力">
-                <button id="announce-btn">送信</button>
+                <input type="text" id="announcement-input" placeholder="お知らせ内容">
+                <select id="announce-mode">
+                    <option value="5s">5秒で消す</option>
+                    <option value="always">ずっと表示</option>
+                </select>
+                <button id="announce-btn">通知送信</button>
+                <button id="announce-stop-btn" style="display:none;">お知らせ停止</button>
             </div>
         </div>
 
         <div class="row">
-            <input type="text" id="comment-input" placeholder="ここに入力してEnterでコメントが流れます" disabled>
+            <select id="com-pos">
+                <option value="naka">通常（流れる）</option>
+                <option value="ue">上部固定</option>
+                <option value="shita">下部固定</option>
+            </select>
+            
+            <select id="com-color">
+                <option value="#ffffff" style="color:#fff;">白</option>
+                <option value="#ff0000" style="color:#f00;">赤</option>
+                <option value="#00ff00" style="color:#0f0;">緑</option>
+                <option value="#00ffff" style="color:#0ff;">青緑</option>
+                <option value="#ffff00" style="color:#ff0;">黄</option>
+                <option value="#ff00ff" style="color:#f0f;">紫</option>
+                <option value="#ff9900" style="color:#f90;">橙</option>
+            </select>
+
+            <label for="com-size">サイズ:</label>
+            <input type="number" id="com-size" value="32" min="10" max="100"><span>px</span>
+
+            <input type="text" id="comment-input" placeholder="コメントを入力してEnter" disabled>
             <button id="send-btn" disabled>送信</button>
         </div>
     </div>
@@ -86,18 +140,27 @@
         const announcementBar = document.getElementById('announcement-bar');
         const statusMsg = document.getElementById('status-msg');
         const peerCountDisplay = document.getElementById('peer-count');
+        
+        // コメント用UI
         const commentInput = document.getElementById('comment-input');
         const sendBtn = document.getElementById('send-btn');
+        const comPos = document.getElementById('com-pos');
+        const comColor = document.getElementById('com-color');
+        const comSize = document.getElementById('com-size');
         
+        // 管理者用UI
         const adminControls = document.getElementById('admin-controls');
         const screenBtn = document.getElementById('screen-btn');
         const announcementInput = document.getElementById('announcement-input');
+        const announceMode = document.getElementById('announce-mode');
         const announceBtn = document.getElementById('announce-btn');
+        const announceStopBtn = document.getElementById('announce-stop-btn');
 
         let peer = null;
         let connections = {}; 
         let localStream = null;
         let mqttClient = null;
+        let announceTimer = null; // 5秒タイマー用
 
         const ROOM_ID = "1";
         const MQTT_TOPIC = `nico-p2p-live-room-${ROOM_ID}`;
@@ -146,7 +209,7 @@
                 call.answer();
                 call.on('stream', (remoteStream) => {
                     videoBg.srcObject = remoteStream;
-                    videoBg.style.display = 'block'; // 映像が来たら表示
+                    videoBg.style.display = 'block';
                 });
             });
         }
@@ -174,12 +237,14 @@
             });
 
             conn.on('data', (data) => {
-                if (data.type === 'comment') createComment(data.text);
-                if (data.type === 'announce') showAnnouncement(data.text);
+                if (data.type === 'comment') {
+                    createComment(data.text, data.pos, data.color, data.size);
+                }
+                if (data.type === 'announce') {
+                    showAnnouncement(data.text, data.mode);
+                }
                 if (data.type === 'stream_ended') {
-                    // 管理者が配信を終了した合図を受け取ったら、ビデオを非表示（元の黒背景）にする
-                    videoBg.style.display = 'none';
-                    videoBg.srcObject = null;
+                    stopAndHideVideo();
                 }
             });
 
@@ -191,22 +256,56 @@
             peerCountDisplay.textContent = Object.keys(connections).length;
         }
 
-        function createComment(text) {
+        function stopAndHideVideo() {
+            videoBg.style.display = 'none';
+            if (videoBg.srcObject) videoBg.srcObject = null;
+        }
+
+        // --- コメント描画（位置・色・サイズ対応版） ---
+        function createComment(text, pos, color, size) {
             const commentElem = document.createElement('div');
-            commentElem.classList.add('comment');
+            commentElem.classList.add('comment', pos); // クラスに位置（naka/ue/shita）を追加
             commentElem.textContent = text;
-            const randomTop = Math.floor(Math.random() * 65) + 10;
-            commentElem.style.top = `${randomTop}%`;
+            
+            // 色とサイズをカスタム（サイズは安全のためここでも最大100に制限）
+            const checkedSize = Math.min(Math.max(parseInt(size) || 32, 10), 100);
+            commentElem.style.color = color;
+            commentElem.style.fontSize = `${checkedSize}px`;
+
+            // 位置に応じたY軸の配置ロジック
+            if (pos === 'naka') {
+                const randomTop = Math.floor(Math.random() * 65) + 10; // 10%〜75%
+                commentElem.style.top = `${randomTop}%`;
+            } else if (pos === 'ue') {
+                commentElem.style.top = '12%'; // 上部固定
+            } else if (pos === 'shita') {
+                commentElem.style.bottom = '22%'; // 下部固定（UIパネルに被らない位置）
+            }
+
             commentStage.appendChild(commentElem);
+
+            // アニメーションが終了したら消去（流れるのは5秒、固定は3秒）
             commentElem.addEventListener('animationend', () => commentElem.remove());
         }
 
-        function showAnnouncement(text) {
+        // --- お知らせ表示（5秒タイマー / ずっと モード対応） ---
+        function showAnnouncement(text, mode) {
+            // タイマーが走っていたら一回クリア
+            if (announceTimer) clearTimeout(announceTimer);
+
             if (!text) {
                 announcementBar.style.display = 'none';
-            } else {
-                announcementBar.textContent = text;
-                announcementBar.style.display = 'block';
+                return;
+            }
+
+            announcementBar.textContent = text;
+            announcementBar.style.display = 'block';
+
+            if (mode === '5s') {
+                // 5秒後に自動で消す
+                announceTimer = setTimeout(() => {
+                    announcementBar.style.display = 'none';
+                }, 5000);
             }
         }
 
@@ -216,54 +315,96 @@
             });
         }
 
+        // コメント送信処理
         function sendComment() {
             const text = commentInput.value.trim();
             if (!text) return;
-            createComment(text);
-            broadcastData({ type: 'comment', text: text });
+
+            // サイズのバリデーション（キーボードでどんな数字を打たれても100以下に強制ロック）
+            let sizeVal = parseInt(comSize.value) || 32;
+            if (sizeVal > 100) {
+                sizeVal = 100;
+                comSize.value = 100; // UI側の表示も100に戻す
+            }
+            if (sizeVal < 10) {
+                sizeVal = 10;
+                comSize.value = 10;
+            }
+
+            const posVal = comPos.value;
+            const colorVal = comColor.value;
+
+            // 自分の画面に反映
+            createComment(text, posVal, colorVal, sizeVal);
+            
+            // 全員へ送信
+            broadcastData({ 
+                type: 'comment', 
+                text: text, 
+                pos: posVal, 
+                color: colorVal, 
+                size: sizeVal 
+            });
+
             commentInput.value = '';
         }
 
-        // 管理者：画面共有
+        // 管理者：画面共有制御
+        function stopScreenShare() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            stopAndHideVideo();
+            localStream = null;
+            screenBtn.textContent = "画面共有を開始";
+            screenBtn.style.background = "#28a745";
+            broadcastData({ type: 'stream_ended' });
+        }
+
         screenBtn.addEventListener('click', async () => {
+            if (localStream) { stopScreenShare(); return; }
             try {
                 localStream = await navigator.mediaDevices.getDisplayMedia({
                     video: { cursor: "always" }, audio: false
                 });
                 videoBg.srcObject = localStream;
-                videoBg.style.display = 'block'; // 管理者自身も表示
-                screenBtn.disabled = true;
-                screenBtn.textContent = "配信中";
+                videoBg.style.display = 'block'; 
+                screenBtn.textContent = "共有を停止";
+                screenBtn.style.background = "#dc3545";
 
                 Object.keys(connections).forEach(peerId => {
                     peer.call(peerId, localStream);
                 });
 
-                // 管理者が「共有を停止」ボタンを押した、またはタブを閉じた時のイベント
-                localStream.getVideoTracks()[0].addEventListener('ended', () => {
-                    screenBtn.disabled = false;
-                    screenBtn.textContent = "画面共有を開始";
-                    
-                    // 自分の画面を黒に戻す
-                    videoBg.style.display = 'none';
-                    videoBg.srcObject = null;
-                    localStream = null;
+                localStream.getVideoTracks()[0].addEventListener('ended', () => { stopScreenShare(); });
+            } catch (err) { console.error("画面共有エラー:", err); }
+        });
 
-                    // 全員の画面を黒に戻すために合図（シグナル）を送信
-                    broadcastData({ type: 'stream_ended' });
-                });
-            } catch (err) {
-                console.error("画面共有エラー:", err);
+        // 管理者：お知らせ送信
+        announceBtn.addEventListener('click', () => {
+            const text = announcementInput.value.trim();
+            const mode = announceMode.value;
+
+            showAnnouncement(text, mode);
+            broadcastData({ type: 'announce', text: text, mode: mode });
+
+            // 「ずっと表示」モードなら管理者画面に「停止」ボタンを出現させる
+            if (mode === 'always' && text) {
+                announceStopBtn.style.display = 'inline-block';
+            } else {
+                announceStopBtn.style.display = 'none';
             }
         });
 
-        // 管理者：お知らせ
-        announceBtn.addEventListener('click', () => {
-            const text = announcementInput.value.trim();
-            showAnnouncement(text);
-            broadcastData({ type: 'announce', text: text });
+        // 管理者：お知らせ停止（非表示にする）
+        announceStopBtn.addEventListener('click', () => {
+            showAnnouncement('', '5s');
+            broadcastData({ type: 'announce', text: '', mode: '5s' });
+            announceStopBtn.style.display = 'none';
+            announcementInput.value = '';
         });
 
+        // イベント登録
         sendBtn.addEventListener('click', sendComment);
         commentInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.isComposing) sendComment();
