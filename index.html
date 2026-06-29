@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>完全自動同期 P2Pシアター</title>
+    <title>試験的P2P表示画面</title>
     <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
@@ -15,6 +15,7 @@
         #video-bg {
             position: absolute; top: 0; left: 0; width: 100%; height: 80vh;
             object-fit: contain; background-color: #000; z-index: 0;
+            display: none; /* 初期状態は非表示（真っ黒な背景） */
         }
         #comment-stage {
             position: absolute; top: 0; left: 0; width: 100%; height: 80vh;
@@ -98,20 +99,17 @@
         let localStream = null;
         let mqttClient = null;
 
-        // 部屋番号は「1」で固定
         const ROOM_ID = "1";
         const MQTT_TOPIC = `nico-p2p-live-room-${ROOM_ID}`;
 
         const isAdmin = window.location.search.includes('_admin');
         if (isAdmin) adminControls.style.display = 'flex';
 
-        // ページ読み込み時に【完全自動】で起動
         window.addEventListener('DOMContentLoaded', () => {
             initP2P();
         });
 
         function initP2P() {
-            // 1. PeerJSを起動
             peer = new Peer();
 
             peer.on('open', (myId) => {
@@ -119,56 +117,45 @@
                 commentInput.disabled = false;
                 sendBtn.disabled = false;
 
-                // 2. 最も安定しているパブリックMQTTブローカー（ブラウザ通信用）に接続
-                // GitHub Pagesのhttps制限を100%回避できる暗号化プロトコルを使用
                 mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
 
                 mqttClient.on('connect', () => {
-                    // 部屋のトピックを購読（同じ部屋の人たちの声を聞く）
                     mqttClient.subscribe(MQTT_TOPIC);
                     statusMsg.textContent = `部屋 ${ROOM_ID} に自動入室しました。`;
-
-                    // 自分の存在（PeerID）を同じ部屋の全員に一斉通知
                     mqttClient.publish(MQTT_TOPIC, JSON.stringify({ type: 'join', id: myId }));
                 });
 
                 mqttClient.on('message', (topic, message) => {
                     const data = JSON.parse(message.toString());
-                    
                     if (data.id && data.id !== myId) {
                         if (data.type === 'join') {
-                            // 後から入ってきた人に「自分もいるよ」と教えてあげる
                             mqttClient.publish(MQTT_TOPIC, JSON.stringify({ type: 'here', id: myId }));
                             connectToPeer(data.id);
                         } else if (data.type === 'here') {
-                            // 先にいた人を発見したのでP2P接続を仕掛ける
                             connectToPeer(data.id);
                         }
                     }
                 });
             });
 
-            // 他人からのデータ接続要求を受け付ける
             peer.on('connection', (conn) => {
                 setupDataConnection(conn);
             });
 
-            // 管理者からの映像通話を受け付ける
             peer.on('call', (call) => {
                 call.answer();
                 call.on('stream', (remoteStream) => {
-                    videoBg.srcObject = remoteStream; // 背景に投影
+                    videoBg.srcObject = remoteStream;
+                    videoBg.style.display = 'block'; // 映像が来たら表示
                 });
             });
         }
 
         function connectToPeer(peerId) {
             if (connections[peerId]) return;
-
             const conn = peer.connect(peerId);
             setupDataConnection(conn);
 
-            // 自分が管理者かつ、すでに配信中の場合は、見つかった相手に即映像を送る
             if (isAdmin && localStream) {
                 setTimeout(() => { peer.call(peerId, localStream); }, 1000);
             }
@@ -189,6 +176,11 @@
             conn.on('data', (data) => {
                 if (data.type === 'comment') createComment(data.text);
                 if (data.type === 'announce') showAnnouncement(data.text);
+                if (data.type === 'stream_ended') {
+                    // 管理者が配信を終了した合図を受け取ったら、ビデオを非表示（元の黒背景）にする
+                    videoBg.style.display = 'none';
+                    videoBg.srcObject = null;
+                }
             });
 
             conn.on('close', () => { delete connections[conn.peer]; updatePeerCount(); });
@@ -239,6 +231,7 @@
                     video: { cursor: "always" }, audio: false
                 });
                 videoBg.srcObject = localStream;
+                videoBg.style.display = 'block'; // 管理者自身も表示
                 screenBtn.disabled = true;
                 screenBtn.textContent = "配信中";
 
@@ -246,10 +239,18 @@
                     peer.call(peerId, localStream);
                 });
 
+                // 管理者が「共有を停止」ボタンを押した、またはタブを閉じた時のイベント
                 localStream.getVideoTracks()[0].addEventListener('ended', () => {
                     screenBtn.disabled = false;
                     screenBtn.textContent = "画面共有を開始";
+                    
+                    // 自分の画面を黒に戻す
+                    videoBg.style.display = 'none';
+                    videoBg.srcObject = null;
                     localStream = null;
+
+                    // 全員の画面を黒に戻すために合図（シグナル）を送信
+                    broadcastData({ type: 'stream_ended' });
                 });
             } catch (err) {
                 console.error("画面共有エラー:", err);
